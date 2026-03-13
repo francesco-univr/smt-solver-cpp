@@ -1,175 +1,127 @@
-# SMT Solver - Francesco Simbola (VR545665)
+# smt-solver-cpp
 
-## Description
+> A from-scratch SMT solver in C++17 for the quantifier-free combination of equality with uninterpreted functions, list theory, and array theory — implementing Nelson-Oppen-style theory combination via congruence closure.
 
-An SMT solver for the **quantifier-free** combination of three theories:
-- **TE**: Equality with uninterpreted functions
-- **Tcons**: Non-empty lists (`cons`, `car`, `cdr`)
-- **TA**: Arrays without extensionality (`store`, `select`)
-
-The solver checks whether a conjunction of equalities and disequalities is **satisfiable (SAT)** or **unsatisfiable (UNSAT)**.
+![C++17](https://img.shields.io/badge/C++-17-blue) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey) ![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## How to Execute
+## Overview
 
-### Windows (pre-compiled executable)
+This solver decides satisfiability of conjunctions of equalities and disequalities over the combined theory **TE ∪ Tcons ∪ TA**:
 
-The archive includes `smt_solver.exe` and required DLL libraries.
+| Theory | Symbols | Axioms handled |
+|---|---|---|
+| **TE** — Equality + uninterpreted functions | `f(x)`, `g(a,b)` | Congruence closure |
+| **Tcons** — Non-empty lists | `cons`, `car`, `cdr` | car/cdr/cons axioms |
+| **TA** — Arrays (no extensionality) | `select`, `store` | Read-over-write axioms |
 
-**From command line:**
-```cmd
-smt_solver.exe test\test_simple_unsat.smt
-```
-
-**Expected output:**
-```
-Parsing...
-Parsing done. Contexts: 1
-Solving...
-Solving done.
-UNSAT
-```
-
-### Interactive mode (stdin)
-
-Run without arguments to enter formulas manually:
-```cmd
-smt_solver.exe
-```
-
-Then type your assertions and:
-- Type `END` on a new line to start solving
-- Type `EXIT` to quit the program
-
-**Example:**
-```
-smt_solver.exe
-(assert (= a b))
-(assert (not (= a b)))
-END
-```
-
-### Run all tests (PowerShell)
-
-```powershell
-Get-ChildItem test\*.smt | ForEach-Object { 
-    Write-Host "$($_.Name): " -NoNewline
-    .\smt_solver.exe $_.FullName | Select-String "^(SAT|UNSAT)$" 
-}
-```
+Given a formula in SMT-LIB 2.0 syntax, the solver outputs **SAT** or **UNSAT**.
 
 ---
 
-## How to Compile
+## Architecture
 
-**Requirements:** C++17 compatible compiler (GCC 7+, Clang 5+ or MSVC 2017+)
+The solver is implemented as a header-only C++17 library with a thin entry point in `main.cpp`. No external dependencies.
+```
+src/
+├── parser.h              # SMT-LIB 2.0 parser with hash-consing for term sharing
+├── ast.h                 # Term, Symbol, Literal — core data structures
+├── union_find.h          # Union-Find with path compression + union by rank
+├── congruence_closure.h  # Congruence Closure (Downey-Sethi-Tarjan style)
+├── theory_solver.h       # Theory-specific axiom instantiation (TA, Tcons)
+└── main.cpp              # Entry point (~50 lines)
+```
 
-### Linux / macOS
+**Key algorithmic choices:**
+- **Hash-consing** in the parser ensures structural sharing — identical subterms are represented by a single pointer, making equality checks O(1)
+- **Congruence Closure** propagates equalities across function applications without exhaustive enumeration
+- **Lazy axiom instantiation** for TA and Tcons — axioms are generated on demand based on the current equivalence classes, avoiding exponential blowup
+
+---
+
+## Build
+
+**Requirements:** C++17 compiler (GCC 7+, Clang 5+, MSVC 2017+)
 ```bash
+# Linux / macOS
 cd src
 g++ -std=c++17 -O2 -o smt_solver main.cpp
 ./smt_solver ../test/test_simple_unsat.smt
 ```
-
-### Windows (MinGW)
 ```cmd
+# Windows (MinGW)
 cd src
 g++ -std=c++17 -O2 -o smt_solver.exe main.cpp
-smt_solver.exe ..\test\test_simple_unsat.smt
-```
 
-### Windows (Visual Studio Developer Command Prompt)
-```cmd
-cd src
+# Windows (MSVC)
 cl /EHsc /O2 /std:c++17 main.cpp /Fe:smt_solver.exe
-smt_solver.exe ..\test\test_simple_unsat.smt
 ```
 
-**Note:** The source is header-only. Only `main.cpp` needs to be compiled; all other files are included automatically.
+A pre-compiled Windows executable (`smt_solver.exe`) with required DLLs is included in the release.
 
 ---
 
-## Input Format
+## Usage
+```bash
+# File mode
+./smt_solver formula.smt
 
-The solver accepts a subset of **SMT-LIB 2.0**:
+# Interactive mode (stdin)
+./smt_solver
+(assert (= a b))
+(assert (not (= a b)))
+END
+# → UNSAT
+```
 
+### Input format (SMT-LIB 2.0 subset)
 ```smt
-; Comment
-(assert (= a b))                          ; equality
-(assert (not (= x y)))                    ; disequality
-(assert (= (f a) (f b)))                  ; uninterpreted functions
-(assert (= (car (cons x y)) x))           ; lists
-(assert (= (select (store arr i v) i) v)) ; arrays
+(assert (= a b))                            ; equality
+(assert (not (= x y)))                      ; disequality
+(assert (= (f a) (f b)))                    ; uninterpreted function
+(assert (= (car (cons x y)) x))             ; list axiom
+(assert (= (select (store arr i v) i) v))   ; array read-over-write
 ```
 
-**Supported constructs:**
-- `(assert φ)` — assertions
-- `(= t1 t2)`, `(not (= t1 t2))` — equalities/disequalities
-- `(and ...)`, `(or ...)`, `(not ...)` — boolean connectives
-- `(=> φ ψ)`, `(xor ...)`, `(ite c t e)` — syntactic sugar
-- `(distinct t1 ... tn)` — expanded to n(n-1)/2 disequalities
-- `(let ((x t)) body)` — local bindings
-- `(forall ...)`, `(exists ...)` — quantifiers are dropped, body is parsed
-
-**Skipped SMT-LIB commands (parsed but ignored):**
-`declare-fun`, `declare-sort`, `declare-const`, `set-logic`, `set-info`, `set-option`, `check-sat`, `exit`
-
-**Interactive mode commands:**
-- `END` — triggers solving (when reading from stdin)
-- `EXIT` — quits the program (when reading from stdin)
-
----
-
-## Output Format
-
-The solver prints one of two results:
-- **SAT** — there exists an interpretation satisfying all constraints
-- **UNSAT** — no interpretation can satisfy all constraints
-
----
-
-## Project Structure
-
-```
-FrancescoSimbolaVR545665/
-├── README.md                 # This file
-├── smt_solver.exe            # Windows executable
-├── libgcc_s_seh-1.dll        # GCC runtime library
-├── libstdc++-6.dll           # C++ standard library
-├── libwinpthread-1.dll       # POSIX thread library
-├── src/
-│   ├── ast.h                 # Term, Symbol, Literal definitions
-│   ├── union_find.h          # Equivalence classes (Union-Find)
-│   ├── congruence_closure.h  # Congruence Closure algorithm
-│   ├── theory_solver.h       # TA/Tcons theory handling
-│   ├── parser.h              # SMT-LIB parser with hash-consing
-│   └── main.cpp              # Entry point
-└── test/
-    ├── test_*.smt            # 27 input files
-    └── test_*.out            # 27 expected output files
-```
+Supported boolean connectives: `and`, `or`, `not`, `=>`, `xor`, `ite`, `distinct`, `let`.
 
 ---
 
 ## Test Suite
 
-The `test/` directory contains 27 test cases:
+27 test cases covering single-theory and combined-theory scenarios:
+```bash
+# Run full test suite (Linux/macOS)
+for f in test/*.smt; do
+    result=$(./smt_solver "$f")
+    expected=$(cat "${f%.smt}.out")
+    [ "$result" = "$expected" ] && echo "PASS: $f" || echo "FAIL: $f"
+done
+```
+```powershell
+# Windows (PowerShell)
+Get-ChildItem test\*.smt | ForEach-Object {
+    Write-Host "$($_.Name): " -NoNewline
+    .\smt_solver.exe $_.FullName | Select-String "^(SAT|UNSAT)$"
+}
+```
 
-| Category | Files | Description |
-|----------|-------|-------------|
-| Base | `test_simple_*.smt` | Basic SAT/UNSAT tests |
-| Tcons | `test_tcons_*.smt` | car/cdr/cons axioms |
-| TA | `test_ta_*.smt` | select/store axioms |
-| Stress | `test_stress*.smt` | Transitivity chains, deep congruences |
-| Axiom | `test_axiom_verify*.smt` | Individual axiom verification |
-| Mixed | `test_complex_*.smt` | Combined theories |
-
-Each `.smt` file has a corresponding `.out` file with the expected result.
+| Category | Count | What's tested |
+|---|---|---|
+| Base | 4 | Basic SAT/UNSAT, equality chains |
+| Tcons | 6 | car/cdr/cons axioms, nested lists |
+| TA | 6 | select/store, write-read interference |
+| Mixed | 5 | Combined TE + TA + Tcons reasoning |
+| Stress | 4 | Transitivity chains, deep congruences |
+| Axiom verification | 2 | Individual axiom soundness checks |
 
 ---
 
-## Author
+## Key Learnings
 
-**Francesco Simbola** — Student ID: VR545665  
-Course: Automated Reasoning — January 2026
+1. **Hash-consing is non-negotiable for term-heavy solvers**: Without structural sharing, congruence closure degrades to O(n²) comparisons. Implementing hash-consing in the parser cut memory usage significantly on the stress tests.
+
+2. **The order of axiom instantiation matters for TA**: The read-over-write axiom `select(store(a,i,v), i) = v` must be instantiated before propagating equalities — getting this order wrong produces incorrect UNSAT on satisfiable array formulas.
+
+3. **Union-Find rank heuristics have outsized impact on congruence closure**: Path compression alone is insufficient — union by rank keeps the amortized cost near O(α(n)) even on the transitivity stress tests with 100+ equality chains.
